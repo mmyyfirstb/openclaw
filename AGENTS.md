@@ -126,6 +126,7 @@
 
 ## GHSA（仓库安全公告）补丁/发布
 
+- Before reviewing security advisories, read `SECURITY.md`.
 - 获取：`gh api /repos/openclaw/openclaw/security-advisories/<GHSA>`
 - 最新 npm 版本：`npm view openclaw version --userconfig "$(mktemp)"`
 - 私有 fork 的 PR 必须已关闭：

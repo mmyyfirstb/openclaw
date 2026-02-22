@@ -3,6 +3,16 @@
 - Repo: https://github.com/openclaw/openclaw
 - GitHub issues/comments/PR comments: use literal multiline strings or `-F - <<'EOF'` (or $'...') for real newlines; never embed "\\n".
 
+### ECS 资源限制
+
+本机为 **2C 4G** 的 ECS，资源非常有限：
+
+- **禁止**运行全量构建命令（`pnpm build`、`npm run build`、`make build` 等），会 OOM
+- **禁止**运行大规模依赖安装（`pnpm install`、`npm install`）
+- TypeScript 检查用轻量方式：`node -e "require('typescript').transpileModule(...)"` 做单文件语法检查
+- **OpenClaw extension 改动**不需要重新构建，extension 是 TypeScript 源码直接发布的。只需：`cd /home/maxwell/project/openclaw && npm pack --ignore-scripts --pack-destination /tmp && sudo npm i -g --ignore-scripts --prefer-offline /tmp/openclaw-<version>.tgz`
+- 避免同时启动多个高内存进程
+
 ## Project Structure & Module Organization
 
 - Source code: `src/` (CLI wiring in `src/cli`, commands in `src/commands`, web provider in `src/provider-web.ts`, infra in `src/infra`, media pipeline in `src/media`).

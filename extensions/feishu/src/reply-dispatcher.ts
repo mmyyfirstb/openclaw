@@ -126,6 +126,21 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     lastPartial = "";
   };
 
+  /** Discard (delete) the streaming card without finalizing content. */
+  const discardStreaming = async () => {
+    if (streamingStartPromise) {
+      await streamingStartPromise;
+    }
+    await partialUpdateQueue;
+    if (streaming?.isActive()) {
+      await streaming.discard();
+    }
+    streaming = null;
+    streamingStartPromise = null;
+    streamText = "";
+    lastPartial = "";
+  };
+
   /** Send text via streaming, card, or plain message. Returns true if streaming handled it. */
   const sendTextPayload = async (
     text: string,
@@ -204,10 +219,10 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         // replying to the media message (mirrors Telegram's caption-on-media pattern).
         // If all media sends fail, fall back to normal text delivery.
         if (mediaList.length > 0) {
-          // Close streaming card before sending media to ensure proper message ordering.
-          if (streaming?.isActive()) {
-            streamText = text;
-            await closeStreaming();
+          // Discard (delete) any active/pending streaming card before sending media
+          // to avoid duplicate text or stray placeholder cards.
+          if (streaming?.isActive() || streamingStartPromise) {
+            await discardStreaming();
           }
           let lastMediaMessageId: string | undefined;
           let mediaDelivered = false;
@@ -233,21 +248,42 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             // Fallback: send text normally if all media failed
             await sendTextPayload(text, info);
           } else if (mediaDelivered && text.trim()) {
-            // Send text as a note-style caption replying to the media message
-            try {
-              await sendCaptionCardFeishu({
-                cfg,
-                to: chatId,
-                text: text.trim(),
-                replyToMessageId: lastMediaMessageId,
-                mentions: mentionTargets,
-                accountId,
-              });
-            } catch (err) {
-              params.runtime.error?.(
-                `feishu[${account.accountId}] sendCaptionCard failed, falling back to text: ${String(err)}`,
-              );
-              await sendTextPayload(text, info);
+            // Send text as a note-style caption replying to the media message.
+            // In raw mode, send plain text instead of an interactive card.
+            if (renderMode === "raw") {
+              const converted = core.channel.text.convertMarkdownTables(text.trim(), tableMode);
+              let first = true;
+              for (const chunk of core.channel.text.chunkTextWithMode(
+                converted,
+                textChunkLimit,
+                chunkMode,
+              )) {
+                await sendMessageFeishu({
+                  cfg,
+                  to: chatId,
+                  text: chunk,
+                  replyToMessageId: lastMediaMessageId,
+                  mentions: first ? mentionTargets : undefined,
+                  accountId,
+                });
+                first = false;
+              }
+            } else {
+              try {
+                await sendCaptionCardFeishu({
+                  cfg,
+                  to: chatId,
+                  text: text.trim(),
+                  replyToMessageId: lastMediaMessageId,
+                  mentions: mentionTargets,
+                  accountId,
+                });
+              } catch (err) {
+                params.runtime.error?.(
+                  `feishu[${account.accountId}] sendCaptionCard failed, falling back to text: ${String(err)}`,
+                );
+                await sendTextPayload(text, info);
+              }
             }
           }
           return;

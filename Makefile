@@ -25,6 +25,10 @@ SHELL := /bin/bash
 NODE_MEM       ?= 512
 NETWORK_CONC   ?= 4
 CHILD_CONC     ?= 1
+# 构建用户: root 执行 Makefile 时，用此用户身份跑 deps/build/pack，
+# 避免 node_modules/dist/.pack 变成 root 所有、污染 maxwell 的目录。
+# 设为空则以当前用户执行: make build BUILD_USER=
+BUILD_USER     ?= maxwell
 # ────────────────────────────────────────────────────────────────────
 
 # 使用 Makefile 所在目录，而非 pwd，以支持 make -C 调用。
@@ -33,6 +37,9 @@ SERVICE_NAME   := openclaw-gateway.service
 SERVICE_FILE   := /root/.config/systemd/user/$(SERVICE_NAME)
 GLOBAL_PKG_DIR := /usr/lib/node_modules/openclaw
 PACK_DIR       := $(PROJECT_DIR)/.pack
+
+# 如果 BUILD_USER 非空且当前用户不是 BUILD_USER，则通过 sudo -u 切换。
+BUILD_CMD      := $(if $(BUILD_USER),sudo -u $(BUILD_USER) --preserve-env=NODE_OPTIONS,)
 
 # 延迟求值: 只在实际引用时才执行 node，make help/clean 不依赖 node。
 VERSION = $(shell node -e "console.log(require('$(PROJECT_DIR)/package.json').version)")
@@ -66,7 +73,7 @@ preflight:
 # ── 安装依赖 ─────────────────────────────────────────────────────────
 deps: preflight
 	@echo "── 安装依赖 (network-concurrency=$(NETWORK_CONC), child-concurrency=$(CHILD_CONC)) ──"
-	cd "$(PROJECT_DIR)" && pnpm install --frozen-lockfile \
+	cd "$(PROJECT_DIR)" && $(BUILD_CMD) pnpm install --frozen-lockfile \
 		--network-concurrency $(NETWORK_CONC) \
 		--child-concurrency $(CHILD_CONC)
 	@echo "── 依赖安装完成 ──"
@@ -76,7 +83,7 @@ deps: preflight
 build: preflight
 	@test -d "$(PROJECT_DIR)/node_modules" || { echo "错误: node_modules 不存在，请先 make deps"; exit 1; }
 	@echo "── 构建中 (max-old-space-size=$(NODE_MEM)MB) ──"
-	cd "$(PROJECT_DIR)" && NODE_OPTIONS="--max-old-space-size=$(NODE_MEM)" pnpm build
+	cd "$(PROJECT_DIR)" && NODE_OPTIONS="--max-old-space-size=$(NODE_MEM)" $(BUILD_CMD) pnpm build
 	@test -f "$(PROJECT_DIR)/dist/index.js" || { echo "错误: dist/index.js 未生成"; exit 1; }
 	@echo "── 构建完成 (dist/index.js ok) ──"
 
@@ -85,8 +92,9 @@ build: preflight
 pack: build
 	@rm -rf "$(PACK_DIR)"
 	@mkdir -p "$(PACK_DIR)"
+	@$(if $(BUILD_USER),chown $(BUILD_USER):$(BUILD_USER) "$(PACK_DIR)",true)
 	@echo "── 打包中 ──"
-	cd "$(PROJECT_DIR)" && pnpm pack --pack-destination "$(PACK_DIR)"
+	cd "$(PROJECT_DIR)" && $(BUILD_CMD) pnpm pack --pack-destination "$(PACK_DIR)"
 	@TARBALL_FILE=$$(ls "$(PACK_DIR)"/*.tgz 2>/dev/null | head -1); \
 		test -n "$$TARBALL_FILE" || { echo "错误: tarball 未创建"; exit 1; }; \
 		echo "── 打包完成 ($$(du -h "$$TARBALL_FILE" | cut -f1)) ──"
@@ -108,7 +116,8 @@ _do-deploy:
 	test -n "$$TARBALL_FILE" || { echo "错误: $(PACK_DIR) 中无 tarball"; exit 1; }; \
 	echo "── 部署 v$(VERSION) ──"; \
 	echo "  1/4  全局安装新版本 …"; \
-	sudo npm install -g --ignore-scripts "$$TARBALL_FILE"
+	sudo npm install -g "$$TARBALL_FILE"
+	@# ── npm install 失败时 make 会在此停止 (exit code 非零) ──
 	@echo "  2/4  停止 gateway …"
 	$(SYSTEMCTL_ROOT) stop $(SERVICE_NAME) 2>/dev/null || true
 	@echo "  3/4  更新服务配置 …"
@@ -118,11 +127,13 @@ _do-deploy:
 	sudo sed -i \
 		-e "s|^Description=.*|Description=OpenClaw Gateway (v$(VERSION))|" \
 		-e "s|OPENCLAW_SERVICE_VERSION=.*|OPENCLAW_SERVICE_VERSION=$(VERSION)|" \
-		"$(SERVICE_FILE)"
+		"$(SERVICE_FILE)" || \
+		{ echo "错误: 更新服务配置失败。gateway 已停止，手动恢复: $(SYSTEMCTL_ROOT) start $(SERVICE_NAME)"; exit 1; }
 	$(SYSTEMCTL_ROOT) daemon-reload
 	@echo "  4/4  启动 gateway …"
 	$(SYSTEMCTL_ROOT) start $(SERVICE_NAME) || \
-		{ echo "错误: gateway 启动失败，最近日志:"; \
+		{ echo "错误: gateway 启动失败。手动恢复: $(SYSTEMCTL_ROOT) start $(SERVICE_NAME)"; \
+		  echo "最近日志:"; \
 		  sudo -u root XDG_RUNTIME_DIR=/run/user/0 journalctl --user-unit $(SERVICE_NAME) -n 20 --no-pager; \
 		  exit 1; }
 	@# 轮询等待服务稳定运行 (最多 10 秒)
@@ -144,7 +155,7 @@ _do-deploy:
 install-global: pack
 	@TARBALL_FILE=$$(ls "$(PACK_DIR)"/*.tgz 2>/dev/null | head -1); \
 	test -n "$$TARBALL_FILE" || { echo "错误: $(PACK_DIR) 中无 tarball"; exit 1; }; \
-	sudo npm install -g --ignore-scripts "$$TARBALL_FILE"
+	sudo npm install -g "$$TARBALL_FILE"
 	@echo "── 已全局安装 v$(VERSION) ──"
 
 # ── 服务管理 ─────────────────────────────────────────────────────────

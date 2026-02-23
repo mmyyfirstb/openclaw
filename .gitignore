@@ -108,3 +108,4 @@ dist/protocol.schema.json
 # Makefile
 # CLAUDE.md
 # AGENTS.md
+.pack/

@@ -22,7 +22,7 @@
 SHELL := /bin/bash
 
 # ── 可调参数 (命令行覆盖: make build NODE_MEM=768) ──────────────────
-NODE_MEM       ?= 512
+NODE_MEM       ?= 1024
 NETWORK_CONC   ?= 4
 CHILD_CONC     ?= 1
 # 构建用户: root 执行 Makefile 时，用此用户身份跑 deps/build/pack，

@@ -8,6 +8,7 @@ const resolveFeishuAccountMock = vi.hoisted(() => vi.fn());
 const normalizeFeishuTargetMock = vi.hoisted(() => vi.fn());
 const resolveReceiveIdTypeMock = vi.hoisted(() => vi.fn());
 const loadWebMediaMock = vi.hoisted(() => vi.fn());
+const parseBufferMock = vi.hoisted(() => vi.fn());
 
 const fileCreateMock = vi.hoisted(() => vi.fn());
 const imageGetMock = vi.hoisted(() => vi.fn());
@@ -36,7 +37,21 @@ vi.mock("./runtime.js", () => ({
   }),
 }));
 
+vi.mock("music-metadata", () => ({
+  parseBuffer: parseBufferMock,
+}));
+
 import { downloadImageFeishu, downloadMessageResourceFeishu, sendMediaFeishu } from "./media.js";
+
+function expectPathIsolatedToTmpRoot(pathValue: string, key: string): void {
+  expect(pathValue).not.toContain(key);
+  expect(pathValue).not.toContain("..");
+
+  const tmpRoot = path.resolve(os.tmpdir());
+  const resolved = path.resolve(pathValue);
+  const rel = path.relative(tmpRoot, resolved);
+  expect(rel === ".." || rel.startsWith(`..${path.sep}`)).toBe(false);
+}
 
 describe("sendMediaFeishu msg_type routing", () => {
   beforeEach(() => {
@@ -142,6 +157,59 @@ describe("sendMediaFeishu msg_type routing", () => {
     );
   });
 
+  it("includes duration in audio upload and message when parsing succeeds", async () => {
+    parseBufferMock.mockResolvedValueOnce({
+      format: { duration: 5.123 },
+    });
+
+    await sendMediaFeishu({
+      cfg: {} as any,
+      to: "user:ou_target",
+      mediaBuffer: Buffer.from("audio-data"),
+      fileName: "voice.opus",
+    });
+
+    // Duration should be passed to upload API (milliseconds as number)
+    expect(fileCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ duration: 5123 }),
+      }),
+    );
+
+    // Duration should be included in audio message content as string
+    expect(messageCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          msg_type: "audio",
+          content: expect.stringContaining('"duration":"5123"'),
+        }),
+      }),
+    );
+  });
+
+  it("omits duration when audio parsing fails", async () => {
+    parseBufferMock.mockRejectedValueOnce(new Error("unsupported format"));
+
+    await sendMediaFeishu({
+      cfg: {} as any,
+      to: "user:ou_target",
+      mediaBuffer: Buffer.from("not-real-audio"),
+      fileName: "voice.mp3",
+    });
+
+    // Upload should not include duration
+    expect(fileCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.not.objectContaining({ duration: expect.anything() }),
+      }),
+    );
+
+    // Audio message content should only have file_key, no duration
+    const callArgs = messageCreateMock.mock.calls[0][0];
+    const content = JSON.parse(callArgs.data.content);
+    expect(content).toEqual({ file_key: "file_key_1" });
+  });
+
   it("uses msg_type=file for documents", async () => {
     await sendMediaFeishu({
       cfg: {} as any,
@@ -219,13 +287,7 @@ describe("sendMediaFeishu msg_type routing", () => {
 
     expect(result.buffer).toEqual(Buffer.from("image-data"));
     expect(capturedPath).toBeDefined();
-    expect(capturedPath).not.toContain(imageKey);
-    expect(capturedPath).not.toContain("..");
-
-    const tmpRoot = path.resolve(os.tmpdir());
-    const resolved = path.resolve(capturedPath as string);
-    const rel = path.relative(tmpRoot, resolved);
-    expect(rel === ".." || rel.startsWith(`..${path.sep}`)).toBe(false);
+    expectPathIsolatedToTmpRoot(capturedPath as string, imageKey);
   });
 
   it("uses isolated temp paths for message resource downloads", async () => {
@@ -248,13 +310,7 @@ describe("sendMediaFeishu msg_type routing", () => {
 
     expect(result.buffer).toEqual(Buffer.from("resource-data"));
     expect(capturedPath).toBeDefined();
-    expect(capturedPath).not.toContain(fileKey);
-    expect(capturedPath).not.toContain("..");
-
-    const tmpRoot = path.resolve(os.tmpdir());
-    const resolved = path.resolve(capturedPath as string);
-    const rel = path.relative(tmpRoot, resolved);
-    expect(rel === ".." || rel.startsWith(`..${path.sep}`)).toBe(false);
+    expectPathIsolatedToTmpRoot(capturedPath as string, fileKey);
   });
 
   it("rejects invalid image keys before calling feishu api", async () => {

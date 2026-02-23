@@ -43,6 +43,16 @@ vi.mock("music-metadata", () => ({
 
 import { downloadImageFeishu, downloadMessageResourceFeishu, sendMediaFeishu } from "./media.js";
 
+function expectPathIsolatedToTmpRoot(pathValue: string, key: string): void {
+  expect(pathValue).not.toContain(key);
+  expect(pathValue).not.toContain("..");
+
+  const tmpRoot = path.resolve(os.tmpdir());
+  const resolved = path.resolve(pathValue);
+  const rel = path.relative(tmpRoot, resolved);
+  expect(rel === ".." || rel.startsWith(`..${path.sep}`)).toBe(false);
+}
+
 describe("sendMediaFeishu msg_type routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -277,13 +287,7 @@ describe("sendMediaFeishu msg_type routing", () => {
 
     expect(result.buffer).toEqual(Buffer.from("image-data"));
     expect(capturedPath).toBeDefined();
-    expect(capturedPath).not.toContain(imageKey);
-    expect(capturedPath).not.toContain("..");
-
-    const tmpRoot = path.resolve(os.tmpdir());
-    const resolved = path.resolve(capturedPath as string);
-    const rel = path.relative(tmpRoot, resolved);
-    expect(rel === ".." || rel.startsWith(`..${path.sep}`)).toBe(false);
+    expectPathIsolatedToTmpRoot(capturedPath as string, imageKey);
   });
 
   it("uses isolated temp paths for message resource downloads", async () => {
@@ -306,13 +310,7 @@ describe("sendMediaFeishu msg_type routing", () => {
 
     expect(result.buffer).toEqual(Buffer.from("resource-data"));
     expect(capturedPath).toBeDefined();
-    expect(capturedPath).not.toContain(fileKey);
-    expect(capturedPath).not.toContain("..");
-
-    const tmpRoot = path.resolve(os.tmpdir());
-    const resolved = path.resolve(capturedPath as string);
-    const rel = path.relative(tmpRoot, resolved);
-    expect(rel === ".." || rel.startsWith(`..${path.sep}`)).toBe(false);
+    expectPathIsolatedToTmpRoot(capturedPath as string, fileKey);
   });
 
   it("rejects invalid image keys before calling feishu api", async () => {
